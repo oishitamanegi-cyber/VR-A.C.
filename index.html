@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>マルチ距離音声チャット</title>
+<style>
+  body { margin:0; font-family:sans-serif; }
+  #field { width:90vw; height:70vh; border:2px solid #333; margin:20px auto; background:#eef; position:relative; overflow:hidden; }
+  .player { position:absolute; text-align:center; }
+  .player img { width:40px; height:40px; border-radius:50%; display:block; margin:0 auto; }
+  .name { font-size:14px; background: rgba(255,255,255,0.8); }
+  #touch-controls button { width:50px; height:50px; font-size:20px; margin:2px; }
+  #my-id { text-align:center; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<div id="my-id">ID: </div>
+<div id="field">
+  <div id="me" class="player">
+    <div class="name">me</div>
+    <img src="https://via.placeholder.com/40">
+  </div>
+</div>
+
+<div id="touch-controls" style="position:fixed; bottom:10px; left:10px;">
+  <button onclick="move(-10,0)">◀</button>
+  <button onclick="move(10,0)">▶</button>
+  <button onclick="move(0,-10)">▲</button>
+  <button onclick="move(0,10)">▼</button>
+</div>
+
+<div style="text-align:center; margin:10px;">
+  <input id="room-id" placeholder="ルームID">
+  <button onclick="joinRoom()">接続</button>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+<script>
+let myPos = { x:200, y:200 };
+let others = {};
+let conns = {};
+let calls = {};
+let remoteAudios = {};
+let myName = prompt("あなたの名前を入力してください","me");
+
+const field = document.getElementById("field");
+const me = document.getElementById("me");
+me.querySelector(".name").innerText = myName;
+
+function draw(){
+  me.style.left = myPos.x + "px";
+  me.style.top = myPos.y + "px";
+
+  for(let id in others){
+    if(!document.getElementById(id)){
+      const div = document.createElement("div");
+      div.className = "player";
+      div.id = id;
+
+      const name = document.createElement("div");
+      name.className = "name";
+      div.appendChild(name);
+
+      const img = document.createElement("img");
+      img.src = "https://via.placeholder.com/40";
+      div.appendChild(img);
+
+      field.appendChild(div);
+    }
+
+    const el = document.getElementById(id);
+    el.style.left = others[id].x + "px";
+    el.style.top = others[id].y + "px";
+    el.querySelector(".name").innerText = others[id].name || "no name";
+  }
+}
+
+window.addEventListener("keydown", e=>{
+  if(e.key==="w") move(0,-10);
+  if(e.key==="s") move(0,10);
+  if(e.key==="a") move(-10,0);
+  if(e.key==="d") move(10,0);
+});
+
+function move(dx,dy){
+  myPos.x += dx;
+  myPos.y += dy;
+  draw();
+  sendPosition();
+}
+
+// ===== Peer =====
+const peer = new Peer();
+
+let localStream;
+navigator.mediaDevices.getUserMedia({ audio:true })
+.then(stream=>{ localStream = stream; });
+
+peer.on('open', id=>{
+  document.getElementById("my-id").innerText = "ID: "+id;
+});
+
+peer.on('connection', conn=>{ setupConnection(conn); });
+peer.on('call', call=>{
+  call.answer(localStream);
+  setupCall(call);
+});
+
+function joinRoom(){
+  const roomId = document.getElementById("room-id").value;
+  if(!roomId) { alert("ルームIDを入力してください"); return; }
+
+  fetch(`https://peerjs-server.herokuapp.com/peers?room=${roomId}`)
+    .then(r=>r.json())
+    .then(peers=>{
+      peers.forEach(pid=>{
+        if(pid !== peer.id && !conns[pid]){
+          const conn = peer.connect(pid);
+          setupConnection(conn);
+          const call = peer.call(pid, localStream);
+          setupCall(call);
+        }
+      });
+    });
+}
+
+// ===== 接続処理 =====
+function setupConnection(conn){
+  conns[conn.peer] = conn;
+
+  conn.on('data', data=>{
+    others[conn.peer] = data;
+    draw();
+  });
+
+  conn.on('close', ()=>{
+    delete others[conn.peer];
+    delete conns[conn.peer];
+    removePlayer(conn.peer);
+  });
+
+  conn.on('open', ()=>{ conn.send({x:myPos.x,y:myPos.y,name:myName}); });
+}
+
+// ===== 通話処理 =====
+function setupCall(call){
+  calls[call.peer] = call;
+  call.on('stream', stream=>{
+    const audio = new Audio();
+    audio.srcObject = stream;
+    audio.autoplay = true;
+    remoteAudios[call.peer] = audio;
+  });
+}
+
+// ===== 位置送信 =====
+function sendPosition(){
+  for(let id in conns){
+    if(conns[id].open){
+      conns[id].send({x:myPos.x,y:myPos.y,name:myName});
+    }
+  }
+}
+
+// ===== 音量更新 =====
+function updateVolume(){
+  for(let id in others){
+    const dx = myPos.x - others[id].x;
+    const dy = myPos.y - others[id].y;
+    const distance = Math.sqrt(dx*dx+dy*dy);
+    let volume = 1 - distance/300;
+    volume = Math.max(0,Math.min(1,volume));
+    if(remoteAudios[id]) remoteAudios[id].volume = volume;
+  }
+}
+
+function removePlayer(id){
+  const el = document.getElementById(id);
+  if(el) el.remove();
+}
+
+draw();
+setInterval(updateVolume,100);
+</script>
+</body>
+</html>
